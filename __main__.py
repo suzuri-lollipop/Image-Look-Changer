@@ -27,7 +27,7 @@ class ImageLookChanger:
         self.bin_thresh = 60.0 # 二値化の閾値
         self.gamma = 1 # ガンマの倍率
         self.window_name = "Display" # プレビューウィンドウの名前
-        self.fps = 90 # プレビューのフレームレート
+        self.fps = 30 # プレビューのフレームレート
 
         # TODO 設定をレイヤーのようにできるようにする
 
@@ -52,6 +52,7 @@ class ImageLookChanger:
 
         # スレッドの作成と実行
         capture_thread = threading.Thread(target=self.capture_process, daemon=True)
+        sleep(0.5)
         process_thread = threading.Thread(target=self.image_cvt_process, daemon=True)
         view_thread = threading.Thread(target=self.image_view_process, daemon=True)
         capture_thread.start()
@@ -115,6 +116,9 @@ class ImageLookChanger:
             with self.capture_lock:
                 if not self.capture_buffer.empty():
                     frame = self.capture_buffer.get()
+                else:
+                    sleep(0.01)
+                    continue
 
             processed_frame = self.cvt_image(frame)
 
@@ -155,6 +159,9 @@ class ImageLookChanger:
             with self.process_lock:
                 if not self.process_buffer.empty():
                     self.final_frame = self.process_buffer.get()
+                else:
+                    sleep(0.01)
+                    continue
             
             self.pil_image = Image.fromarray(self.final_frame)
             self.image_data = self.pil_image.convert("RGB").tobytes()
