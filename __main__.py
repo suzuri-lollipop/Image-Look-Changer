@@ -13,32 +13,30 @@ import win32api_scrshot
 class ImageLookChanger:
     def __init__(self):
         # TODO iniで設定を複数保存できるようにする
-        # 処理する画面位置指定
-        x = 400
-        y = 300
-        cols = 800
-        rows = 800
 
-        # 表示サイズ(倍)
-        view_size = 1
-
+        x = 400 # ポジションの原点x
+        y = 300 # ポジションの原点y
+        cols = 800 # 原点からの幅のピクセル数
+        rows = 800 # 原点からの高さのピクセル数
+        view_size = 1 # 表示サイズ(倍)
         self.alpha = 1.5 # コントラスト制御 (1.0 = 通常)
         self.beta = 1 # 明るさ制御 (0 = 通常)
+        self.red_adjustment = 0.1 # Rの倍率
+        self.green_adjustment = 1 # Gの倍率
+        self.blue_adjustment = 0 # Bの倍率
+        self.bin_thresh = 60.0 # 二値化の閾値
+        self.gamma = 1 # ガンマの倍率
+        self.window_name = "Display" # プレビューウィンドウの名前
+        self.fps = 90 # プレビューのフレームレート
 
-        self.red_adjustment = 0.1
-        self.green_adjustment = 1
-        self.blue_adjustment = 0
-        self.bin_thresh = 60.0
-        self.gamma = 1
+        # TODO 設定をレイヤーのようにできるようにする
 
+        # プレビューウィンドウサイズの定義
         self.view_cols = int(cols * view_size)
         self.view_rows = int(rows * view_size)
 
+        # プレビューウィンドウサイズの定義
         self.target_position = (x, y, x + cols, y + rows)
-        # imshowのウィンドウの名前
-        self.window_name = "Display"
-        # フレームレート
-        self.fps = 90
 
         self.capture_buffer = Queue(maxsize=5)  # キャプチャ用バッファ
         self.process_buffer = Queue(maxsize=5)  # 処理用バッファ
@@ -51,14 +49,8 @@ class ImageLookChanger:
         with self.capture_lock:    
             if not self.capture_buffer.full():
                 self.capture_buffer.put(frame)
-        #self.final_frame = self.winss.create_ss()
-        #frame_to_display = cv2.resize(self.final_frame,(self.view_cols, self.view_rows))
-        #frame_to_display = cv2.cvtColor(frame_to_display, cv2.COLOR_BGRA2RGB)
-        #self.pil_image = Image.fromarray(frame_to_display)
-        #self.image_data = self.pil_image.convert("RGB").tobytes()
-        # スレッドロックの定義
-        #self.lock = threading.Lock()
-              # スレッドの作成と実行
+
+        # スレッドの作成と実行
         capture_thread = threading.Thread(target=self.capture_process, daemon=True)
         process_thread = threading.Thread(target=self.image_cvt_process, daemon=True)
         view_thread = threading.Thread(target=self.image_view_process, daemon=True)
@@ -77,8 +69,6 @@ class ImageLookChanger:
         return shot_img
 
     def cvt_image(self, _frame):
-         
-        #frame = np.array(_frame)
 
         frame = cv2.cvtColor(_frame, cv2.COLOR_BGRA2BGR)
         frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
@@ -133,6 +123,7 @@ class ImageLookChanger:
                     self.process_buffer.put(processed_frame)
 
     def image_view_process(self):
+
         # GLFWを初期化
         if not glfw.init():
             return
@@ -153,27 +144,14 @@ class ImageLookChanger:
         # OpenGLコンテキストを作成
         glfw.make_context_current(window)
 
-        # FPS制御用の変数
-        #frame_duration = 1.0 / self.fps
-        #last_time = time()
-
         # 描画ループ
         while not glfw.window_should_close(window):
-
-            # 現在時刻
-            #current_time = time()
-            # 前回フレームからの経過時間
-            #elapsed_since_last = current_time - last_time
 
             # OpenGLでの画像描画
             gl.glClear(gl.GL_COLOR_BUFFER_BIT)
             gl.glRasterPos2f(-1, 1)
             gl.glPixelZoom(1, -1)
 
-            # cv2で処理された画像をOpenGLが扱える形式に変換
-
-            #frame_to_display = self.final_frame.copy()
-            #frame = cv2.resize(frame_to_display,(self.view_cols,self.view_rows))          
             with self.process_lock:
                 if not self.process_buffer.empty():
                     self.final_frame = self.process_buffer.get()
@@ -182,17 +160,13 @@ class ImageLookChanger:
             self.image_data = self.pil_image.convert("RGB").tobytes()
 
             # 画像の描画
-            gl.glDrawPixels(self.pil_image.width, self.pil_image.height, gl.GL_RGB, gl.GL_UNSIGNED_BYTE, self.image_data)
+            try:
+                gl.glDrawPixels(self.pil_image.width, self.pil_image.height, gl.GL_RGB, gl.GL_UNSIGNED_BYTE, self.image_data)
+            except Exception as e:
+                continue
 
             glfw.swap_buffers(window)
             glfw.poll_events()
-
-            # 次のフレームまでの待機時間
-            #if elapsed_since_last < frame_duration:
-            #    sleep_duration = frame_duration - elapsed_since_last
-            #    sleep(sleep_duration)
-
-            #last_time = current_time
 
         # 終了処理
         glfw.destroy_window(window)
