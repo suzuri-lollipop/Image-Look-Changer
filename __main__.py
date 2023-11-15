@@ -6,27 +6,30 @@ import cv2
 import threading
 from time import sleep, time
 import sys
+from queue import Queue
 import win32api_scrshot
+
 
 class ImageLookChanger:
     def __init__(self):
         # TODO iniで設定を複数保存できるようにする
         # 処理する画面位置指定
         x = 400
-        y = 400
-        cols = 500
-        rows = 500
+        y = 300
+        cols = 800
+        rows = 800
 
         # 表示サイズ(倍)
         view_size = 1
 
-        self.alpha = 5 # コントラスト制御 (1.0 = 通常)
-        self.beta = 0 # 明るさ制御 (0 = 通常)
+        self.alpha = 1.5 # コントラスト制御 (1.0 = 通常)
+        self.beta = 1 # 明るさ制御 (0 = 通常)
 
-        self.red_adjustment = 1
+        self.red_adjustment = 0.1
         self.green_adjustment = 1
-        self.blue_adjustment = 1
-        self.bin_thresh = 50.0
+        self.blue_adjustment = 0
+        self.bin_thresh = 60.0
+        self.gamma = 1
 
         self.view_cols = int(cols * view_size)
         self.view_rows = int(rows * view_size)
@@ -35,16 +38,33 @@ class ImageLookChanger:
         # imshowのウィンドウの名前
         self.window_name = "Display"
         # フレームレート
-        self.fps = 60
+        self.fps = 90
+
+        self.capture_buffer = Queue(maxsize=5)  # キャプチャ用バッファ
+        self.process_buffer = Queue(maxsize=5)  # 処理用バッファ
+        self.capture_lock = threading.Lock()     # キャプチャ用ロック
+        self.process_lock = threading.Lock()     # 処理用ロック
+
         # 一度だけフレームを処理してimshowのnullを回避
         self.winss = win32api_scrshot.win_ss(cols,rows,x,y)
-        self.final_frame = self.winss.create_ss()
+        frame = self.take_screenshot()
+        with self.capture_lock:    
+            if not self.capture_buffer.full():
+                self.capture_buffer.put(frame)
+        #self.final_frame = self.winss.create_ss()
+        #frame_to_display = cv2.resize(self.final_frame,(self.view_cols, self.view_rows))
+        #frame_to_display = cv2.cvtColor(frame_to_display, cv2.COLOR_BGRA2RGB)
+        #self.pil_image = Image.fromarray(frame_to_display)
+        #self.image_data = self.pil_image.convert("RGB").tobytes()
         # スレッドロックの定義
-        self.lock = threading.Lock()
-        tkvw_t = threading.Thread(target=self.image_cvt_prosess,daemon=True)
-        tkvw_t.start()
-        view_p = threading.Thread(target=self.image_view_prosess,daemon=True)
-        view_p.run()
+        #self.lock = threading.Lock()
+              # スレッドの作成と実行
+        capture_thread = threading.Thread(target=self.capture_process, daemon=True)
+        process_thread = threading.Thread(target=self.image_cvt_process, daemon=True)
+        view_thread = threading.Thread(target=self.image_view_process, daemon=True)
+        capture_thread.start()
+        process_thread.start()
+        view_thread.run()
 
     def take_screenshot(self):
         # スクリーンショット
@@ -59,36 +79,60 @@ class ImageLookChanger:
     def cvt_image(self, _frame):
          
         #frame = np.array(_frame)
-        frame = _frame
-        frame = cv2.cvtColor(frame, cv2.COLOR_BGRA2BGR)
+
+        frame = cv2.cvtColor(_frame, cv2.COLOR_BGRA2BGR)
         frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
 
-        frame[:, :, 0] = np.clip(frame[:, :, 2] * self.red_adjustment, 0, 255)
-        frame[:, :, 1] = np.clip(frame[:, :, 2] * self.green_adjustment, 0, 255)
+        frame[:, :, 0] = np.clip(frame[:, :, 0] * self.red_adjustment, 0, 255)
+        frame[:, :, 1] = np.clip(frame[:, :, 1] * self.green_adjustment, 0, 255)
         frame[:, :, 2] = np.clip(frame[:, :, 2] * self.blue_adjustment, 0, 255)
-        cv2.threshold(frame, self.bin_thresh, 255, cv2.THRESH_BINARY, frame)
+        
         frame = cv2.convertScaleAbs(frame,alpha=self.alpha,beta=self.beta)
         frame = cv2.cvtColor(frame, cv2.COLOR_RGB2GRAY)
-        
+        #cv2.threshold(frame, self.bin_thresh, 255, cv2.THRESH_BINARY, frame)
         # 最終的に渡すフレームはRGBを想定
         frame = cv2.cvtColor(frame, cv2.COLOR_GRAY2RGB)
-        frame = cv2.resize(frame, (self.view_cols, self.view_rows)) #なぜかエラーが起こる
+        
+        frame = cv2.convertScaleAbs(frame,alpha=self.alpha,beta=self.beta)
+
+        inv_gamma = 1 / self.gamma
+        table = np.array([((i / 255.0) ** inv_gamma) * 255 for i in np.arange(0, 256)]).astype("uint8")
+
+        # ルックアップテーブルを使用してガンマ補正を適用
+        frame = cv2.LUT(frame, table)
+        #frame = cv2.resize(frame,(int(keiryo_cols*2+0.5),int(keiryo_rows*2+0.5)))
         return frame
 
-    def image_cvt_prosess(self):
-
+    def capture_process(self):
+        frame_duration = 1.0 / self.fps
+        last_time = time()
         while True:
-            start_time = time()
+            current_time = time()
+            elapsed_since_last = current_time - last_time
             frame = self.take_screenshot()
-            frame = self.cvt_image(frame)
-            with self.lock:
-                self.final_frame = frame
-            # フレームレート制御
-            elapsed = time() - start_time
-            wait_time = max(1.0 / self.fps - elapsed, 0)
-            sleep(wait_time)
- 
-    def image_view_prosess(self):
+            with self.capture_lock:
+                if not self.capture_buffer.full():
+                    self.capture_buffer.put(frame)
+            # 次のフレームまでの待機時間
+            if elapsed_since_last < frame_duration:
+                sleep_duration = frame_duration - elapsed_since_last
+                sleep(sleep_duration)
+
+            last_time = current_time
+
+    def image_cvt_process(self):
+        while True:
+            with self.capture_lock:
+                if not self.capture_buffer.empty():
+                    frame = self.capture_buffer.get()
+
+            processed_frame = self.cvt_image(frame)
+
+            with self.process_lock:
+                if not self.process_buffer.full():
+                    self.process_buffer.put(processed_frame)
+
+    def image_view_process(self):
         # GLFWを初期化
         if not glfw.init():
             return
@@ -110,16 +154,16 @@ class ImageLookChanger:
         glfw.make_context_current(window)
 
         # FPS制御用の変数
-        frame_duration = 1.0 / self.fps
-        last_time = time()
+        #frame_duration = 1.0 / self.fps
+        #last_time = time()
 
         # 描画ループ
         while not glfw.window_should_close(window):
 
             # 現在時刻
-            current_time = time()
+            #current_time = time()
             # 前回フレームからの経過時間
-            elapsed_since_last = current_time - last_time
+            #elapsed_since_last = current_time - last_time
 
             # OpenGLでの画像描画
             gl.glClear(gl.GL_COLOR_BUFFER_BIT)
@@ -127,23 +171,28 @@ class ImageLookChanger:
             gl.glPixelZoom(1, -1)
 
             # cv2で処理された画像をOpenGLが扱える形式に変換
-            with self.lock:
-                frame_to_display = self.final_frame.copy()      
-            pil_image = Image.fromarray(frame_to_display)
-            image_data = pil_image.convert("RGB").tobytes()
+
+            #frame_to_display = self.final_frame.copy()
+            #frame = cv2.resize(frame_to_display,(self.view_cols,self.view_rows))          
+            with self.process_lock:
+                if not self.process_buffer.empty():
+                    self.final_frame = self.process_buffer.get()
+            
+            self.pil_image = Image.fromarray(self.final_frame)
+            self.image_data = self.pil_image.convert("RGB").tobytes()
 
             # 画像の描画
-            gl.glDrawPixels(pil_image.width, pil_image.height, gl.GL_RGB, gl.GL_UNSIGNED_BYTE, image_data)
+            gl.glDrawPixels(self.pil_image.width, self.pil_image.height, gl.GL_RGB, gl.GL_UNSIGNED_BYTE, self.image_data)
 
             glfw.swap_buffers(window)
             glfw.poll_events()
 
             # 次のフレームまでの待機時間
-            if elapsed_since_last < frame_duration:
-                sleep_duration = frame_duration - elapsed_since_last
-                sleep(sleep_duration)
+            #if elapsed_since_last < frame_duration:
+            #    sleep_duration = frame_duration - elapsed_since_last
+            #    sleep(sleep_duration)
 
-            last_time = current_time
+            #last_time = current_time
 
         # 終了処理
         glfw.destroy_window(window)

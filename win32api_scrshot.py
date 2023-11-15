@@ -1,11 +1,7 @@
 import win32gui
 import win32ui
 import win32con
-import win32api
-from PIL import ImageGrab
 import numpy as np
-import time  # 時間計測のために追加
-
 
 class win_ss:
     def __init__(self, _width, _height, _left, _top):
@@ -24,7 +20,11 @@ class win_ss:
         bmp = win32ui.CreateBitmap()
         bmp.CreateCompatibleBitmap(srcdc, self.width, self.height)
         memdc.SelectObject(bmp)
-        memdc.BitBlt((0, 0), (self.width, self.height), srcdc, (self.left, self.top), win32con.SRCCOPY)
+        try:
+            memdc.BitBlt((0, 0), (self.width, self.height), srcdc, (self.left, self.top), win32con.SRCCOPY)
+        except Exception as e:
+            print("スリープ中")
+            return -1
 
         # ビットマップから画像データを取得
         signedIntsArray = bmp.GetBitmapBits(True)
